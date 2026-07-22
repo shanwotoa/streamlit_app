@@ -1,93 +1,62 @@
 import streamlit as st
 import pandas as pd
-import re
-from collections import Counter
 from googleapiclient.discovery import build
-import plotly.express as px
+from wordcloud import WordCloud
+import matplotlib.pyplot as plt
+from urllib.parse import urlparse, parse_qs
 
-st.set_page_config(page_title="YouTube 댓글 분석기")
-
+# Github Secrets 또는 secrets.toml
 API_KEY = st.secrets["YOUTUBE_API_KEY"]
 
 youtube = build("youtube", "v3", developerKey=API_KEY)
 
-st.title("📺 YouTube 댓글 분석기")
+st.title("📺 유튜브 댓글 분석기")
 
-url = st.text_input("유튜브 URL 입력")
+url = st.text_input("유튜브 링크 입력")
 
-def video_id(url):
-    m = re.search(r"(?:v=|youtu\.be/)([^&?/]+)", url)
-    return m.group(1) if m else None
+if st.button("분석"):
 
-if st.button("댓글 분석"):
+    video_id = parse_qs(urlparse(url).query)["v"][0]
 
-    vid = video_id(url)
+    request = youtube.commentThreads().list(
+        part="snippet",
+        videoId=video_id,
+        maxResults=100
+    )
 
-    if not vid:
-        st.error("URL을 확인하세요.")
-        st.stop()
+    response = request.execute()
 
     comments = []
-    token = None
 
-    while True:
-        res = youtube.commentThreads().list(
-            part="snippet",
-            videoId=vid,
-            maxResults=100,
-            pageToken=token,
-            textFormat="plainText"
-        ).execute()
+    for item in response["items"]:
+        c = item["snippet"]["topLevelComment"]["snippet"]["textDisplay"]
+        comments.append(c)
 
-        for item in res["items"]:
-            s = item["snippet"]["topLevelComment"]["snippet"]
-            comments.append({
-                "댓글": s["textDisplay"],
-                "좋아요": s["likeCount"]
-            })
+    df = pd.DataFrame({"댓글": comments})
 
-        token = res.get("nextPageToken")
-
-        if token is None or len(comments) >= 500:
-            break
-
-    df = pd.DataFrame(comments)
-
-    st.success(f"{len(df)}개의 댓글 수집 완료")
-
+    st.subheader("댓글")
     st.dataframe(df)
 
-    text = " ".join(df["댓글"])
+    st.subheader("댓글 길이")
 
-    words = re.findall(r"[가-힣]{2,}", text)
+    df["길이"] = df["댓글"].str.len()
 
-    stop = {
-        "영상","진짜","너무","정말","오늘","입니다",
-        "그리고","그냥","하는","있는","같은"
-    }
+    fig, ax = plt.subplots()
+    ax.hist(df["길이"])
+    st.pyplot(fig)
 
-    words = [w for w in words if w not in stop]
+    st.subheader("워드클라우드")
 
-    top = Counter(words).most_common(20)
+    text = " ".join(comments)
 
-    freq = pd.DataFrame(top, columns=["단어","빈도"])
+    wc = WordCloud(
+        font_path="malgun.ttf",   # 윈도우
+        width=800,
+        height=400,
+        background_color="white"
+    ).generate(text)
 
-    st.subheader("TOP 20 단어")
-
-    fig = px.bar(
-        freq,
-        x="단어",
-        y="빈도",
-        color="빈도"
-    )
-
-    st.plotly_chart(fig, use_container_width=True)
-
-    csv = df.to_csv(index=False).encode("utf-8-sig")
-
-    st.download_button(
-        "CSV 다운로드",
-        csv,
-        "youtube_comments.csv",
-        "text/csv"
-    )
+    fig, ax = plt.subplots(figsize=(10,5))
+    ax.imshow(wc)
+    ax.axis("off")
+    st.pyplot(fig)
