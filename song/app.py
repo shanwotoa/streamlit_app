@@ -2,88 +2,140 @@ import os
 import re
 import requests
 import streamlit as st
+from collections import Counter
 
 API_KEY = os.getenv("YOUTUBE_API_KEY")
 
-st.title("🎵 내 취향인 노래 찾기")
+st.set_page_config(page_title="내 취향인 노래 찾기")
+st.title("🎵 댓글 기반 노래 추천")
 
-url = st.text_input("유튜브 링크 입력")
+# 감성 키워드 → 검색어
+MOOD_MAP = {
+    "감성": "감성 플레이리스트",
+    "힐링": "힐링 노래",
+    "새벽": "새벽 감성 노래",
+    "눈물": "슬픈 노래",
+    "슬픔": "슬픈 발라드",
+    "청춘": "청춘 노래",
+    "사랑": "사랑 노래",
+    "여름": "여름 노래",
+    "겨울": "겨울 감성",
+    "인디": "인디 명곡",
+    "락": "락 추천",
+    "밴드": "밴드 명곡"
+}
 
-def get_video_id(url):
-    if "v=" in url:
-        return url.split("v=")[1][:11]
-    return None
+STOPWORDS = {
+    "노래","영상","진짜","너무","좋아요","감사","최고","입니다",
+    "ㅋㅋ","ㅎㅎ","ㅠㅠ","ㅜㅜ","이번","항상","이거","정말"
+}
 
-def get_video_info(video_id):
-    url = f"https://www.googleapis.com/youtube/v3/videos?part=snippet&id={video_id}&key={API_KEY}"
+def video_id(url):
+    m = re.search(r"v=([a-zA-Z0-9_-]{11})", url)
+    if m:
+        return m.group(1)
+    return url[-11:]
+
+def get_title(video):
+    url = f"https://www.googleapis.com/youtube/v3/videos?part=snippet&id={video}&key={API_KEY}"
     data = requests.get(url).json()
+    return data["items"][0]["snippet"]["title"]
 
-    title = data["items"][0]["snippet"]["title"]
-
-    return title
-
-def get_comments(video_id):
-    url = f"https://www.googleapis.com/youtube/v3/commentThreads?part=snippet&videoId={video_id}&maxResults=20&key={API_KEY}"
-
-    data = requests.get(url).json()
+def get_comments(video):
+    url = f"https://www.googleapis.com/youtube/v3/commentThreads?part=snippet&videoId={video}&maxResults=100&key={API_KEY}"
 
     comments = []
 
-    if "items" in data:
+    while url:
+        data = requests.get(url).json()
+
+        if "items" not in data:
+            break
+
         for item in data["items"]:
             text = item["snippet"]["topLevelComment"]["snippet"]["textDisplay"]
             comments.append(text)
 
+        if "nextPageToken" in data and len(comments) < 100:
+            token = data["nextPageToken"]
+            url = f"https://www.googleapis.com/youtube/v3/commentThreads?part=snippet&videoId={video}&pageToken={token}&maxResults=100&key={API_KEY}"
+        else:
+            break
+
     return comments
 
-def keyword(text):
+def analyze(comments):
 
-    words = re.findall(r"[가-힣A-Za-z]+", text)
+    text = " ".join(comments)
 
-    stop = ["영상","노래","진짜","너무","좋아요","입니다","ㅋㅋ","ㅎㅎ"]
+    words = re.findall(r"[가-힣]{2,}", text)
 
-    result = []
+    words = [w for w in words if w not in STOPWORDS]
 
-    for w in words:
-        if len(w) >= 2 and w not in stop:
-            result.append(w)
+    count = Counter(words)
 
-    return " ".join(result[:5])
+    return count.most_common(10)
 
-def search_music(query):
+def search_music(query, original_title):
 
-    url = f"https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&maxResults=5&q={query}&key={API_KEY}"
+    url = f"https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&maxResults=10&q={query}&key={API_KEY}"
 
     data = requests.get(url).json()
 
     result = []
 
     for item in data["items"]:
+
+        title = item["snippet"]["title"]
+
+        # 같은 노래 제외
+        if original_title.lower()[:10] in title.lower():
+            continue
+
         result.append({
-            "title":item["snippet"]["title"],
-            "id":item["id"]["videoId"]
+            "title": title,
+            "url": f"https://youtu.be/{item['id']['videoId']}"
         })
 
     return result
 
+
+link = st.text_input("유튜브 링크 입력")
+
 if st.button("추천받기"):
 
-    video_id = get_video_id(url)
+    vid = video_id(link)
 
-    title = get_video_info(video_id)
+    title = get_title(vid)
 
-    comments = get_comments(video_id)
+    comments = get_comments(vid)
 
-    query = keyword(title + " " + " ".join(comments))
+    keywords = analyze(comments)
 
-    st.write("### 추출 키워드")
-    st.write(query)
+    st.subheader("댓글에서 많이 나온 단어")
 
-    st.write("## 추천 노래")
+    for k, c in keywords:
+        st.write(f"✅ {k} ({c})")
 
-    musics = search_music(query)
+    mood = None
 
-    for music in musics:
-        if music["id"] != video_id:
-            st.write(f"🎵 {music['title']}")
-            st.write(f"https://youtu.be/{music['id']}")
+    for k, _ in keywords:
+        if k in MOOD_MAP:
+            mood = MOOD_MAP[k]
+            break
+
+    if mood is None:
+        mood = "감성 플레이리스트"
+
+    st.subheader(f"추천 검색어 : {mood}")
+
+    musics = search_music(mood, title)
+
+    st.subheader("추천 노래")
+
+    if not musics:
+        st.info("추천 결과가 없습니다.")
+
+    for music in musics[:5]:
+        st.markdown(f"**{music['title']}**")
+        st.write(music["url"])
